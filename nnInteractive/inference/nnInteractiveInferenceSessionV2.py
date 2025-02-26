@@ -19,6 +19,7 @@ from nnunetv2.imageio.nibabel_reader_writer import NibabelIO
 
 import nnInteractive
 from nnInteractive.interaction.point import PointInteraction_stub
+from nnInteractive.trainer.nnInteractiveTrainer import nnInteractiveTrainer_stub
 from nnInteractive.utils.bboxes import cover_structure_with_bboxes, \
     get_bboxes_and_prios_from_image, prediction_propagation_add_bounding_boxes, filter_bboxes
 from nnunetv2.paths import nnUNet_raw, nnUNet_results
@@ -565,8 +566,11 @@ class nnInteractiveInferenceSessionV2():
         trainer_class = recursive_find_python_class(join(nnInteractive.__path__[0], "trainer"),
                                                     trainer_name, 'nnInteractive.trainer')
         if trainer_class is None:
-            raise RuntimeError(f'Unable to locate trainer class {trainer_name} in nnunetv2.training.nnUNetTrainer. '
+            print(f'Unable to locate trainer class {trainer_name} in nnInteractive.trainer. '
                                f'Please place it there (in any .py file)!')
+            print('Attempting to use default nnInteractiveTrainer_stub. If you encounter errors, this is where you need to look!')
+            trainer_class = nnInteractiveTrainer_stub
+
         network = trainer_class.build_network_architecture(
             configuration_manager.network_arch_class_name,
             configuration_manager.network_arch_init_kwargs,
