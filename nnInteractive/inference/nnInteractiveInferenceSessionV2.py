@@ -16,10 +16,12 @@ from time import time, sleep
 
 import nnunetv2
 from nnunetv2.imageio.nibabel_reader_writer import NibabelIO
+
+import nnInteractive
+from nnInteractive.interaction.point import PointInteraction_stub
 from nnInteractive.utils.bboxes import cover_structure_with_bboxes, \
     get_bboxes_and_prios_from_image, prediction_propagation_add_bounding_boxes, filter_bboxes
 from nnunetv2.paths import nnUNet_raw, nnUNet_results
-from nnunetv2.training.interaction_simulation.interactions.points import PointInteraction
 from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
 from nnunetv2.utilities.helpers import dummy_context, empty_cache
 from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
@@ -531,9 +533,8 @@ class nnInteractiveInferenceSessionV2():
             point_interaction_radius = 4
             point_interaction_use_etd = True
             self.preferred_scribble_thickness = [2, 2, 2]
-            self.point_interaction = PointInteraction(
+            self.point_interaction = PointInteraction_stub(
                 point_interaction_radius,
-                1,
                 point_interaction_use_etd)
             self.pad_mode_data = "constant"
         else:
@@ -542,7 +543,7 @@ class nnInteractiveInferenceSessionV2():
             if not isinstance(self.preferred_scribble_thickness, (tuple, list)):
                 self.preferred_scribble_thickness = [self.preferred_scribble_thickness] * 3
             point_interaction_use_etd = True # so far this is not defined in that file so we stick with default
-            self.point_interaction = PointInteraction(point_interaction_radius, 1, point_interaction_use_etd)
+            self.point_interaction = PointInteraction_stub(point_interaction_radius, point_interaction_use_etd)
             # padding mode for data. See nnInteractiveTrainerV2_nodelete_reflectpad
             self.pad_mode_data = json_content['pad_mode_image'] if 'pad_mode_image' in json_content.keys() else "constant"
 
@@ -561,8 +562,8 @@ class nnInteractiveInferenceSessionV2():
         configuration_manager = plans_manager.get_configuration(configuration_name)
         # restore network
         num_input_channels = determine_num_input_channels(plans_manager, configuration_manager, dataset_json)
-        trainer_class = recursive_find_python_class(join(nnunetv2.__path__[0], "training", "nnUNetTrainer"),
-                                                    trainer_name, 'nnunetv2.training.nnUNetTrainer')
+        trainer_class = recursive_find_python_class(join(nnInteractive.__path__[0], "trainer"),
+                                                    trainer_name, 'nnInteractive.trainer')
         if trainer_class is None:
             raise RuntimeError(f'Unable to locate trainer class {trainer_name} in nnunetv2.training.nnUNetTrainer. '
                                f'Please place it there (in any .py file)!')
