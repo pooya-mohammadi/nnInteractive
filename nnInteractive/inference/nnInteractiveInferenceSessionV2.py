@@ -1,5 +1,3 @@
-from typing_extensions import Unpack
-
 import threading
 from concurrent.futures import ProcessPoolExecutor, Future
 from os import cpu_count
@@ -277,7 +275,7 @@ class nnInteractiveInferenceSessionV2():
         # place bbox
         slicer = tuple([slice(*i) for i in transformed_bbox_coordinates])
         channel = -6 if include_interaction else -5
-        self.interactions[channel, Unpack[slicer]] = 1
+        self.interactions[(channel, *slicer)] = 1
 
         # forward pass
         if run_prediction:
