@@ -203,11 +203,8 @@ def generate_bounding_boxes(mask, bbox_size=(192, 192, 192), stride: Union[List[
     """
     # Prevent infinite recursion
     if current_depth > max_depth:
-        print('random fallback due to max recursion depth')
+        # print('random fallback due to max recursion depth')
         return random_sampling_fallback(mask, bbox_size, margin, 25)
-
-    if current_depth > 0:
-        print('recursion depth', current_depth)
 
     # Ensure bbox_size, stride, and margin are lists
     bbox_size = list(bbox_size)
@@ -231,8 +228,8 @@ def generate_bounding_boxes(mask, bbox_size=(192, 192, 192), stride: Union[List[
         stride = [max(1, round((j.item() - i.item()) / 4)) for i, j in zip(min_coords, max_coords)]
 
     stride = list(stride)
-    print('stride', stride)
-    print('bbox', [[i, j] for i, j in zip(min_coords, max_coords)])
+    # print('stride', stride)
+    # print('bbox', [[i, j] for i, j in zip(min_coords, max_coords)])
 
     # Step 3: Generate potential centers within the object's bounding box
     potential_centers = []
@@ -241,7 +238,7 @@ def generate_bounding_boxes(mask, bbox_size=(192, 192, 192), stride: Union[List[
             for z in range(max(0, min_coords[2].item()), min(mask.shape[2], max_coords[2].item() + 1), stride[2]):
                 if mask[x, y, z]:
                     potential_centers.append([x, y, z])
-    print(f'got {len(potential_centers)} center candidates')
+    # print(f'got {len(potential_centers)} center candidates')
 
     if len(potential_centers) == 0:
         return generate_bounding_boxes(
@@ -308,7 +305,7 @@ def generate_bounding_boxes(mask, bbox_size=(192, 192, 192), stride: Union[List[
     # Step 5: Recursively cover remaining voxels using uncovered as the mask
     if uncovered.any():
         if uncovered.sum() < np.prod([i // 3 for i in bbox_size]):
-            print('random fallback')
+            # print('random fallback')
             bboxes.extend(random_sampling_fallback(uncovered, bbox_size, margin, 25))
         else:
             remaining_bboxes = generate_bounding_boxes(

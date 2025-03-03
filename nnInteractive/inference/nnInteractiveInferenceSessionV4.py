@@ -18,8 +18,6 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
     @torch.inference_mode
     # @benchmark_decorator
     def _predict(self):
-        self.verbose_run_times = True
-
         assert len(self.new_interaction_centers) == len(self.new_interaction_zoom_out_factors)
         if len(self.new_interaction_centers) > 1:
             print('It seems like more than one interaction was added since the last prediction. This is not '
@@ -228,8 +226,8 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
 
                     del diff_map
 
-
-                    print(f'Using {len(bboxes_ordered)} bounding boxes for refinement')
+                    if self.verbose:
+                        print(f'Using {len(bboxes_ordered)} bounding boxes for refinement')
 
                     preallocated_input = torch.zeros((8, *self.configuration_manager.patch_size), device=self.device, dtype=torch.float)
                     for nref, refinement_bbox in enumerate(bboxes_ordered):
