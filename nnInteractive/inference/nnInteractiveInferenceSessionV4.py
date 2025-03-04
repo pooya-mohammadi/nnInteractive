@@ -14,7 +14,6 @@ from time import time
 
 class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
     @torch.inference_mode
-    # @benchmark_decorator
     def _predict(self):
         """
         This function is a smoking mess to read. This is deliberate. Initially it was super pretty and easy to

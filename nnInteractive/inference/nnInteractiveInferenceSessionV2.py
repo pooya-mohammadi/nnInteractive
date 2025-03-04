@@ -1,6 +1,7 @@
 import threading
 from concurrent.futures import ProcessPoolExecutor, Future
 from os import cpu_count
+from time import sleep
 from typing import Union, List, Tuple, Optional
 
 import numpy as np
@@ -8,23 +9,20 @@ import torch
 from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice, insert_crop_into_image, \
     crop_and_pad_nd
 from batchgenerators.utilities.file_and_folder_operations import load_json, join
+from nnunetv2.imageio.nibabel_reader_writer import NibabelIO
+from nnunetv2.paths import nnUNet_raw, nnUNet_results
+from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
+from nnunetv2.utilities.helpers import dummy_context, empty_cache
+from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
+from nnunetv2.utilities.plans_handling.plans_handler import PlansManager, ConfigurationManager
 from torch import nn
 from torch._dynamo import OptimizedModule
-from time import time, sleep
-
-import nnunetv2
-from nnunetv2.imageio.nibabel_reader_writer import NibabelIO
 
 import nnInteractive
 from nnInteractive.interaction.point import PointInteraction_stub
 from nnInteractive.trainer.nnInteractiveTrainer import nnInteractiveTrainer_stub
 from nnInteractive.utils.bboxes import cover_structure_with_bboxes, \
     get_bboxes_and_prios_from_image, prediction_propagation_add_bounding_boxes, filter_bboxes
-from nnunetv2.paths import nnUNet_raw, nnUNet_results
-from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
-from nnunetv2.utilities.helpers import dummy_context, empty_cache
-from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
-from nnunetv2.utilities.plans_handling.plans_handler import PlansManager, ConfigurationManager
 
 
 class nnInteractiveInferenceSessionV2():
@@ -227,7 +225,6 @@ class nnInteractiveInferenceSessionV2():
                 self.target_buffer.zero_()
         empty_cache(self.device)
 
-    # @benchmark_decorator
     def add_bbox_interaction(self, bbox_coords, include_interaction: bool, run_prediction: bool = True) -> np.ndarray:
         self._finish_preprocessing_and_initialize_interactions()
 
@@ -281,7 +278,6 @@ class nnInteractiveInferenceSessionV2():
         if run_prediction:
             self._predict()
 
-    # @benchmark_decorator
     def add_point_interaction(self, coordinates: Tuple[int, ...], include_interaction: bool, run_prediction: bool = True):
         self._finish_preprocessing_and_initialize_interactions()
 
@@ -299,7 +295,6 @@ class nnInteractiveInferenceSessionV2():
         if run_prediction:
             self._predict()
 
-    # @benchmark_decorator
     def add_scribble_interaction(self, scribble_image: np.ndarray,  include_interaction: bool, run_prediction: bool = True):
         assert all([i == j for i, j in zip(self.input_image_shape[1:], scribble_image.shape)]), f'Given scribble image must match input image shape. Input image was: {self.input_image_shape[1:]}, given: {scribble_image.shape}'
         self._finish_preprocessing_and_initialize_interactions()
@@ -322,7 +317,6 @@ class nnInteractiveInferenceSessionV2():
         if run_prediction:
             self._predict()
 
-    # @benchmark_decorator
     def add_lasso_interaction(self, lasso_image: np.ndarray,  include_interaction: bool, run_prediction: bool = True):
         assert all([i == j for i, j in zip(self.input_image_shape[1:], lasso_image.shape)]), f'Given lasso image must match input image shape. Input image was: {self.input_image_shape[1:]}, given: {lasso_image.shape}'
         self._finish_preprocessing_and_initialize_interactions()
@@ -346,7 +340,6 @@ class nnInteractiveInferenceSessionV2():
         if run_prediction:
             self._predict()
 
-    # @benchmark_decorator
     def add_initial_seg_interaction(self, initial_seg: np.ndarray, run_prediction: bool = False):
         """
         WARNING THIS WILL RESET INTERACTIONS!
@@ -379,7 +372,6 @@ class nnInteractiveInferenceSessionV2():
             self._predict()
 
     @torch.inference_mode
-    # @benchmark_decorator
     def _predict(self):
         max_idx = len(self.new_interaction_bboxes) if not self.do_prediction_propagation else self.prediction_propagation_max_n_patches#(self.prediction_propagation_max_n_patches + len(self.new_interaction_bboxes))
 
@@ -468,7 +460,6 @@ class nnInteractiveInferenceSessionV2():
     def _add_patch_for_initial_seg_interaction(self, initial_seg):
         return self._generic_add_patch_from_image(initial_seg)
 
-    # @benchmark_decorator
     def _generic_add_patch_from_image(self, image: torch.Tensor):
         if not torch.any(image):
             print('Received empty image prompt. Cannot add patches for prediction')
@@ -488,7 +479,6 @@ class nnInteractiveInferenceSessionV2():
             print(f'Added {len(bboxes_ordered)} new bounding boxes for prediction from this interaction')
         self.new_interaction_bboxes += bboxes_ordered
 
-    # @benchmark_decorator
     def _generic_add_patch(self, coordinates):
         """
         coordinates must be given for internal representation!

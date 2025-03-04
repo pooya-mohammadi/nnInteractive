@@ -126,7 +126,6 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
         self.has_positive_bbox = False
 
     @torch.inference_mode
-    # @benchmark_decorator
     def _predict(self):
         assert len(self.new_interaction_centers) == len(self.new_interaction_zoom_out_factors)
         if len(self.new_interaction_centers) > 1:
@@ -396,7 +395,6 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
             self.has_positive_bbox = True
         return super().add_bbox_interaction(bbox_coords, include_interaction, run_prediction)
 
-    # @benchmark_decorator
     def _generic_add_patch_from_image(self, image: torch.Tensor):
         if not torch.any(image):
             print('Received empty image prompt. Cannot add patches for prediction')
