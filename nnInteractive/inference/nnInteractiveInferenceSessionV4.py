@@ -2,14 +2,14 @@ from time import time
 
 import numpy as np
 import torch
-from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice, insert_crop_into_image, \
+from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice, \
     crop_and_pad_nd
 from nnunetv2.utilities.helpers import dummy_context, empty_cache
 from torch.nn.functional import interpolate
 
 from nnInteractive.inference.nnInteractiveInferenceSessionV3 import nnInteractiveInferenceSessionV3
 from nnInteractive.utils.bboxes import generate_bounding_boxes
-from nnInteractive.utils.crop import crop_and_pad_into_buffer
+from nnInteractive.utils.crop import crop_and_pad_into_buffer, crop_to_valid, pad_cropped, paste_tensor
 from nnInteractive.utils.erosion_dilation import iterative_3x3_same_padding_pool3d
 from nnInteractive.utils.rounding import round_to_nearest_odd
 
@@ -18,6 +18,8 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
     @torch.inference_mode
     # @benchmark_decorator
     def _predict(self):
+
+        assert self.pad_mode_data == 'constant', 'pad modes other than constant are not implemented here'
         assert len(self.new_interaction_centers) == len(self.new_interaction_zoom_out_factors)
         if len(self.new_interaction_centers) > 1:
             print('It seems like more than one interaction was added since the last prediction. This is not '
@@ -48,19 +50,27 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
                     scaled_bbox = [[c - p // 2, c + p // 2 + p % 2] for c, p in zip(prediction_center, scaled_patch_size)]
 
                     start = time()
-                    crop_img = crop_and_pad_nd(self.preprocessed_image, scaled_bbox, pad_mode=self.pad_mode_data)
-                    crop_interactions = crop_and_pad_nd(self.interactions, scaled_bbox)
+                    crop_img, pad = crop_to_valid(self.preprocessed_image, scaled_bbox)
+                    crop_img = crop_img.to(self.device, non_blocking=self.device.type == 'cuda')
+                    crop_interactions, pad_interaction = crop_to_valid(self.interactions, scaled_bbox)
+
+                    # crop_img = crop_and_pad_nd(self.preprocessed_image, scaled_bbox, pad_mode=self.pad_mode_data)
+                    # crop_interactions = crop_and_pad_nd(self.interactions, scaled_bbox)
                     if self.verbose_run_times: print(f'Time crop of size {scaled_patch_size}', time() - start)
 
                     # resize input_for_predict (which may be larger than patch size) to patch size
                     # this implementation may not seem straightforward but it does save VRAM which is crucial here
-                    if not all([i == j for i, j in zip(self.configuration_manager.patch_size, crop_interactions.shape[-3:])]):
-                        start = time()
+                    if not all([i == j for i, j in zip(self.configuration_manager.patch_size, scaled_patch_size)]):
                         crop_interactions_resampled_gpu = torch.empty((7, *self.configuration_manager.patch_size), dtype=torch.float16, device=self.device)
                         # previous seg, bbox+, bbox-
+                        start = time()
                         for i in range(0, 3):
                             # this is area for a reason but I aint telling ya why
-                            crop_interactions_resampled_gpu[i] = interpolate(crop_interactions[i][None, None].to(self.device), self.configuration_manager.patch_size, mode='area')[0][0]
+                            if any([x for y in pad_interaction for x in y]):
+                                tmp = pad_cropped(crop_interactions[i].to(self.device, non_blocking=self.device.type == 'cuda'), pad_interaction)
+                            else:
+                                tmp = crop_interactions[i].to(self.device)
+                            crop_interactions_resampled_gpu[i] = interpolate(tmp[None, None], self.configuration_manager.patch_size, mode='area')[0][0]
                         empty_cache(self.device)
                         if self.verbose_run_times: print(f'Time resample interactions 0-3', time() - start)
 
@@ -68,30 +78,39 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
                         # point+, point-, scribble+, scribble-
                         time_mp = []
                         time_interpolate = []
+                        time_pad = []
                         for i in range(3, 7):
-                            tmp = crop_interactions[i].to(self.device)
+                            start = time()
+                            if any([x for y in pad_interaction for x in y]):
+                                tmp = pad_cropped(crop_interactions[i].to(self.device, non_blocking=self.device.type == 'cuda'), pad_interaction)
+                            else:
+                                tmp = crop_interactions[i].to(self.device, non_blocking=self.device.type == 'cuda')
+                            time_pad.append(time() - start)
                             if max_pool_ks > 1:
                                 # dilate to preserve interactions after downsampling
                                 start = time()
                                 tmp = iterative_3x3_same_padding_pool3d(tmp[None, None], max_pool_ks)[0, 0]
                                 time_mp.append(time() - start)
                             start = time()
-                            # this is area for a reason but I aint telling ya why
+                            # this is 'area' for a reason but I aint telling ya why
                             crop_interactions_resampled_gpu[i] = interpolate(tmp[None, None], self.configuration_manager.patch_size, mode='area')[0][0]
                             time_interpolate.append(time() - start)
-                            del tmp
-                        if self.verbose_run_times: print(f'Time max poolings (avg)', np.mean(time_mp))
-                        if self.verbose_run_times: print(f'Time resampling interactions 4-7', np.mean(time_interpolate))
+                        del tmp
+                        if self.verbose_run_times: print(f'Time padding (sum)', np.sum(time_pad))
+                        if self.verbose_run_times: print(f'Time max poolings (sum)', np.sum(time_mp))
+                        if self.verbose_run_times: print(f'Time resampling interactions 4-7 (sum)', np.sum(time_interpolate))
                         start = time()
-                        crop_img = interpolate(crop_img[None].to(self.device), self.configuration_manager.patch_size, mode='trilinear')[0]
+                        crop_img = interpolate(pad_cropped(crop_img, pad)[None] if any([x for y in pad_interaction for x in y]) else crop_img[None], self.configuration_manager.patch_size, mode='trilinear')[0]
                         if self.verbose_run_times: print(f'Time resample image', time() - start)
                         crop_interactions = crop_interactions_resampled_gpu
                         del crop_interactions_resampled_gpu
                         empty_cache(self.device)
                     else:
                         start = time()
-                        crop_img = crop_img.to(self.device, non_blocking=self.device.type == 'cuda')
-                        crop_interactions = crop_interactions.to(self.device, non_blocking=self.device.type == 'cuda')
+                        # crop_img is already on device
+                        crop_img = pad_cropped(crop_img, pad) if any([x for y in pad_interaction for x in y]) else crop_img
+                        # crop_img = crop_img.to(self.device, non_blocking=self.device.type == 'cuda')
+                        crop_interactions = pad_cropped(crop_interactions.to(self.device, non_blocking=self.device.type == 'cuda'), pad_interaction) if any([x for y in pad_interaction for x in y]) else crop_interactions.to(self.device, non_blocking=self.device.type == 'cuda')
                         if self.verbose_run_times: print('Time no resampling just copy to GPU', time() - start)
 
                     start = time()
@@ -106,7 +125,7 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
                     del input_for_predict
 
                     # detect changes at borders
-                    previous_zoom_prediction = crop_and_pad_nd(self.interactions[0], scaled_bbox).to(self.device)
+                    previous_zoom_prediction = crop_and_pad_nd(self.interactions[0], scaled_bbox).to(self.device, non_blocking=self.device.type == 'cuda')
                     if not all([i == j for i, j in zip(pred.shape, previous_zoom_prediction.shape)]):
                         start = time()
                         previous_zoom_prediction = interpolate(previous_zoom_prediction[None, None].to(float), pred.shape, mode='nearest')[0, 0]
@@ -149,7 +168,7 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
                     # if we do not continue zooming we need a difference map for sampling patches
                     if not continue_zoom and zoom_out_factor > 1:
                         # wow this circus saves ~30ms relative to naive implementation
-                        previous_prediction = previous_prediction.to(self.device, non_blocking=True)
+                        previous_prediction = previous_prediction.to(self.device, non_blocking=self.device.type == 'cuda')
                         start = time()
                         seen_bbox = [[max(0, i[0]), min(i[1], s)] for i, s in zip(scaled_bbox, previous_prediction.shape)]
                         bbox_tmp = [[i[0] - s[0], i[1] - s[0]] for i, s in zip(seen_bbox, scaled_bbox)]
@@ -159,7 +178,7 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
                         diff_map = pred[slicer2] != previous_prediction[slicer]
                         # dont allocate new memory, just reuse previous_prediction. We don't need it anymore
                         previous_prediction.zero_()
-                        diff_map = insert_crop_into_image(previous_prediction, diff_map, seen_bbox)
+                        diff_map = paste_tensor(previous_prediction, diff_map, seen_bbox)
                         if self.verbose_run_times: print('Time create diff_map', time() - start)
 
                         # open the difference map to keep computational load in check (fewer refinement boxes)
@@ -177,11 +196,11 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
                         has_diff = False
 
                     if zoom_out_factor == 1 or (not continue_zoom and has_diff): # rare case where no changes are needed because of useless interaction. Need to check for not continue_zoom because otherwise diff_map wint exist
-                        pred = pred.half().to('cpu')
-                        start = time()
+                        pred = pred.cpu()
 
+                        start = time()
                         if zoom_out_factor == 1:
-                            insert_crop_into_image(self.interactions[0], pred, scaled_bbox)
+                            paste_tensor(self.interactions[0], pred.half(), scaled_bbox)
                         else:
                             seen_bbox = [[max(0, i[0]), min(i[1], s)] for i, s in
                                          zip(scaled_bbox, diff_map.shape)]
@@ -191,13 +210,17 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
                             slicer2 = bounding_box_to_slice(bbox_tmp)
                             mask = (diff_map[slicer] > 0).cpu()
                             self.interactions[0][slicer][mask] = pred[slicer2][mask].half()
+                        if self.verbose_run_times: print(f'Time insert prediction of shape {pred.shape} into interactions[0] (zoom factor {zoom_out_factor}, has diff {has_diff})', time() - start)
 
                         # place into target buffer
+                        start = time()
                         bbox = [[i[0] + bbc[0], i[1] + bbc[0]] for i, bbc in
                                 zip(scaled_bbox, self.preprocessed_props['bbox_used_for_cropping'])]
-                        insert_crop_into_image(self.target_buffer,
-                                               pred if isinstance(self.target_buffer, torch.Tensor) else pred.numpy(), bbox)
-                        if self.verbose_run_times: print('Time insert prediction', time() - start)
+                        paste_tensor(self.target_buffer, pred, bbox)
+                        #
+                        # insert_crop_into_image(self.target_buffer,
+                        #                        pred if isinstance(self.target_buffer, torch.Tensor) else pred.numpy(), bbox)
+                        if self.verbose_run_times: print(f'Time insert prediction of shape {pred.shape} into target buffer', time() - start)
                     del pred
 
                     empty_cache(self.device)
@@ -238,10 +261,10 @@ class nnInteractiveInferenceSessionV4(nnInteractiveInferenceSessionV3):
 
                         pred = self.network(preallocated_input[None])[0].argmax(0).detach().cpu()
 
-                        insert_crop_into_image(self.interactions[0], pred, refinement_bbox)
+                        paste_tensor(self.interactions[0], pred, refinement_bbox)
                         # place into target buffer
                         bbox = [[i[0] + bbc[0], i[1] + bbc[0]] for i, bbc in zip(refinement_bbox, self.preprocessed_props['bbox_used_for_cropping'])]
-                        insert_crop_into_image(self.target_buffer, pred if isinstance(self.target_buffer, torch.Tensor) else pred.numpy(), bbox)
+                        paste_tensor(self.target_buffer, pred, bbox)
                         del pred
                         preallocated_input.zero_()
                         if self.verbose_run_times: print(f'Time refinement loop {nref}, bbox {refinement_bbox}', time() - start)
