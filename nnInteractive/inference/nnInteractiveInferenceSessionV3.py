@@ -351,7 +351,7 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
                     print(f'Took {round(end_refinement - start_refinement, 3)} s for refining the segmentation with {len(bboxes_ordered)} bounding boxes')
                 else:
                     print('No refinement necessary')
-        print(f'Done. Total time {round(time() - start, 2)}s')
+        print(f'Done. Total time {round(time() - start, 3)}s')
 
         self.new_interaction_centers = []
         self.new_interaction_zoom_out_factors = []
