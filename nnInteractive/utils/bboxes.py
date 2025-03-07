@@ -301,7 +301,7 @@ def generate_bounding_boxes(mask, bbox_size=(192, 192, 192), stride: Union[List[
 
         # Remove the used center from potential_centers
         potential_centers = potential_centers[uncovered[tuple(potential_centers.T)] > 0]
-        
+
     # Step 5: Recursively cover remaining voxels using uncovered as the mask
     if uncovered.any():
         if uncovered.sum() < np.prod([i // 3 for i in bbox_size]):

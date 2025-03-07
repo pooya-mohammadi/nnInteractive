@@ -302,8 +302,8 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
                         bbox = [[i[0] + bbc[0], i[1] + bbc[0]] for i, bbc in
                                 zip(scaled_bbox, self.preprocessed_props['bbox_used_for_cropping'])]
                         paste_tensor(self.target_buffer, pred, bbox)
-                    del pred
 
+                    del pred
                     empty_cache(self.device)
 
                     if continue_zoom:
@@ -327,6 +327,7 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
                     bboxes_ordered = generate_bounding_boxes(diff_map, self.configuration_manager.patch_size, stride='auto', margin=(10, 10, 10), max_depth=3)
 
                     del diff_map
+                    empty_cache(self.device)
 
                     if self.verbose:
                         print(f'Using {len(bboxes_ordered)} bounding boxes for refinement')
