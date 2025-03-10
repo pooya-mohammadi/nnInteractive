@@ -54,3 +54,6 @@ build-backend = "setuptools.build_meta"
 skip = '.git,*.pdf,*.svg'
 #
 # ignore-words-list = ''
+
+[tool.setuptools]
+packages = ["nnInteractive"]

@@ -72,70 +72,108 @@ Here is a minimalistic script that covers the core functionality of nnInteractiv
 
 ```python
 import os
-from huggingface_hub import snapshot_download  # you might have to install huggingface_hub manually as this is not part of the repository dependencies
 import torch
+import SimpleITK as sitk
+from huggingface_hub import snapshot_download  # Install huggingface_hub if not already installed
 
-# download trained model weights (~400MB)
-repo_id = "nnInteractive/nnInteractive"
-model_name = "nnInteractive_v1.0"  # there might be updated models in the future
+# --- Download Trained Model Weights (~400MB) ---
+REPO_ID = "nnInteractive/nnInteractive"
+MODEL_NAME = "nnInteractive_v1.0"  # Updated models may be available in the future
+DOWNLOAD_DIR = "/home/isensee/temp"  # Specify the download directory
 
 download_path = snapshot_download(
-    repo_id=repo_id, allow_patterns=[f"{model_name}/*"]
+    repo_id=REPO_ID, 
+    allow_patterns=[f"{MODEL_NAME}/*"],
+    local_dir=DOWNLOAD_DIR
 )
 
-# the downloaded model is now in XXXXX.
+# The model is now stored in DOWNLOAD_DIR/MODEL_NAME.
 
-# Initialize an inference session. The downloaded model will tell you what the preferred inference session is as part of its YYYY file. 
+# --- Initialize Inference Session ---
 from nnInteractive.inference.nnInteractiveInferenceSessionV3 import nnInteractiveInferenceSessionV3
 
 session = nnInteractiveInferenceSessionV3(
-    device=torch.device('cuda:0'),
-    use_torch_compile=False,  # not tested for now
+    device=torch.device("cuda:0"),  # Set inference device
+    use_torch_compile=False,  # Experimental: Not tested yet
     verbose=False,
-    torch_n_threads=os.cpu_count(),
-    interaction_decay=0.9, # same as in training
-    use_background_preprocessing=True, # use threading for preprocessing and memory allocation. Primarily useful in the GUI
-    do_prediction_propagation=True, # AutoZoom
-    use_pinned_memory=True,
-    verbose_run_times=False
+    torch_n_threads=os.cpu_count(),  # Use available CPU cores
+    interaction_decay=0.9,  # Must match the training setting
+    use_background_preprocessing=True,  # Enables threading for preprocessing and memory allocation (useful in GUI mode)
+    do_prediction_propagation=True,  # Enables AutoZoom for better patching
+    use_pinned_memory=True,  # Optimizes GPU memory transfers
+    verbose_run_times=False,
 )
 
-# set an image, here an example for how to load one with SimpleITK
-import SimpleITK as sitk
-img = sitk.GetArrayFromImage(sitk.ReadImage('FILENAME'))
+# Load the trained model
+model_path = os.path.join(DOWNLOAD_DIR, MODEL_NAME)
+session.initialize_from_trained_model_folder(model_path)
 
-# Image MUST be 4D with shape (1, x, y, z)
+# --- Load Input Image (Example with SimpleITK) ---
+input_image = sitk.ReadImage("FILENAME")
+img = sitk.GetArrayFromImage(input_image)[None]  # Ensure shape (1, x, y, z)
+
+# Validate input dimensions
+if img.ndim != 4:
+    raise ValueError("Input image must be 4D with shape (1, x, y, z)")
+
 session.set_image(img)
 
-# give the session a target array to write results into. Must be 3D (x, y, z)
-target_tensor = torch.zeros(img.shape[1:], dtype=torch.uint8)
+# --- Define Output Buffer ---
+target_tensor = torch.zeros(img.shape[1:], dtype=torch.uint8)  # Must be 3D (x, y, z)
 session.set_target_buffer(target_tensor)
 
-# now we are ready to interact! Here are some example prompts
-# IMPORTANT: include_interaction indicates whether this is a positive (True) or negative (False) prompt
-# The session will run a prediction after each new prompt
+# --- Interacting with the Model ---
+# Interactions can be freely chained and mixed in any order. Each interaction refines the segmentation.
+# The model updates the segmentation mask in the target buffer after every interaction.
 
-# point prompt. Point coordinates are a tuple (a, b, c) of where in the image the point should be placed
+# Example: Add a point interaction
+# POINT_COORDINATES should be a tuple (x, y, z) specifying the point location.
 session.add_point_interaction(POINT_COORDINATES, include_interaction=True)
 
-# bbox prompt: Bboxes are half-open intervals [a, b) in each dimension: [[x1, x2], [y1, y2], [z1, z2]]. This function is used for 2D and for 3D bounding boxes.
-# IMPORTANT: nnInteractive pretrained models only support 2D bounding boxes! So one of the dimensions must be [x1, x1 + 1]
+# Example: Add a bounding box interaction
+# BBOX_COORDINATES must be specified as [[x1, x2], [y1, y2], [z1, z2]] (half-open intervals).
+# Note: nnInteractive pre-trained models currently only support **2D bounding boxes**.
+# This means that **one dimension must be [d, d+1]** to indicate a single slice.
+
+# Example of a 2D bounding box in the axial plane (XY slice at depth Z)
+# BBOX_COORDINATES = [[30, 80], [40, 100], [10, 11]]  # X: 30-80, Y: 40-100, Z: slice 10
+
 session.add_bbox_interaction(BBOX_COORDINATES, include_interaction=True)
 
-# scribble prompt: A 3D image of the same shape as img that has a hand drawn scribble in it. Background must be 0, scribble must be 1!
-# since scribbles are 2D only one slice in any orientation is populated in the 3D image
-# nnInteractive models expect a certain scribble thickness. Use session.preferred_scribble_thickness!
+# Example: Add a scribble interaction
+# - A 3D image of the same shape as img where one slice (any axis-aligned orientation) contains a hand-drawn scribble.
+# - Background must be 0, and scribble must be 1.
+# - Use session.preferred_scribble_thickness for optimal results.
 session.add_scribble_interaction(SCRIBBLE_IMAGE, include_interaction=True)
 
-# lasso prompt. Just like scribbles we expect a 3D image in here where in one slice (any plane) there is a closed contour depicting the lasso selection.
+# Example: Add a lasso interaction
+# - Similarly to scribble a 3D image with a single slice containing a **closed contour** representing the selection.
 session.add_lasso_interaction(LASSO_IMAGE, include_interaction=True)
 
-# Results can be retrieved at any time. They are written in the target_tensor:
-# Either
-results = session.target_buffer 
-# OR
-results = target_tensor
+# You can combine any number of interactions as needed. 
+# The model refines the segmentation result incrementally with each new interaction.
 
+# --- Retrieve Results ---
+# The target buffer holds the segmentation result.
+results = session.target_buffer.clone()
+# OR (equivalent)
+results = target_tensor.clone()
+
+# Cloning is required because the buffer will be **reused** for the next object.
+# Alternatively, set a new target buffer for each object:
+session.set_target_buffer(torch.zeros(img.shape[1:], dtype=torch.uint8))
+
+# --- Start a New Object Segmentation ---
+session.reset_interactions()  # Clears the target buffer and resets interactions
+
+# Now you can start segmenting the next object in the image.
+
+# --- Set a New Image ---
+# Setting a new image also requires setting a new matching target buffer
+session.set_image(NEW_IMAGE)
+session.set_target_buffer(torch.zeros(NEW_IMAGE.shape[1:], dtype=torch.uint8))
+
+# Enjoy!
 ```
 
 

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice, insert_crop_into_image, \
     crop_and_pad_nd
-from batchgenerators.utilities.file_and_folder_operations import load_json, join
+from batchgenerators.utilities.file_and_folder_operations import load_json, join, subdirs
 from nnunetv2.imageio.nibabel_reader_writer import NibabelIO
 from nnunetv2.paths import nnUNet_raw, nnUNet_results
 from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
@@ -509,7 +509,7 @@ class nnInteractiveInferenceSessionV2():
 
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
-                                             use_fold: Union[int, str],
+                                             use_fold: Union[int, str] = None,
                                              checkpoint_name: str = 'checkpoint_final.pth'):
         """
         This is used when making predictions with a trained model
@@ -540,8 +540,15 @@ class nnInteractiveInferenceSessionV2():
         plans = load_json(join(model_training_output_dir, 'plans.json'))
         plans_manager = PlansManager(plans)
 
-        use_fold = int(use_fold) if use_fold != 'all' else use_fold
-        checkpoint = torch.load(join(model_training_output_dir, f'fold_{use_fold}', checkpoint_name),
+        if use_fold is not None:
+            use_fold = int(use_fold) if use_fold != 'all' else use_fold
+            fold_folder = f'fold_{use_fold}'
+        else:
+            fldrs = subdirs(model_training_output_dir, prefix='fold_', join=False)
+            assert len(fldrs) == 1, f'Attempted to infer fold but there is != 1 fold_ folders: {fldrs}'
+            fold_folder = fldrs[0]
+
+        checkpoint = torch.load(join(model_training_output_dir, fold_folder, checkpoint_name),
                                 map_location=self.device, weights_only=False)
         trainer_name = checkpoint['trainer_name']
         configuration_name = checkpoint['init_args']['configuration']
