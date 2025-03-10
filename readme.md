@@ -1,4 +1,4 @@
-LOGO
+<img src="imgs/nnInteractive_header_white.png">
 
 # nnInteractive: Redefining 3D Promptable Segmentation
 
