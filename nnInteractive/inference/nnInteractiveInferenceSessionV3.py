@@ -40,11 +40,13 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
         self.preprocess_future = None
         self.interactions_future = None
 
-    def set_image(self, image: np.ndarray, image_properties: dict):
+    def set_image(self, image: np.ndarray, image_properties: dict = None):
         """
         Image must be 4D to satisfy nnU-Net needs: [c, x, y, z]
         Offload the processing to a background thread.
         """
+        if image_properties is None:
+            image_properties = {}
         self._reset_session()
         assert image.ndim == 4, f'expected a 4d image as input, got {image.ndim}d. Shape {image.shape}'
         if self.verbose:
