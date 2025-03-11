@@ -55,5 +55,6 @@ skip = '.git,*.pdf,*.svg'
 #
 # ignore-words-list = ''
 
-[tool.setuptools]
-packages = ["nnInteractive"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nnInteractive*"]
