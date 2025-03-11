@@ -338,14 +338,13 @@ class nnInteractiveInferenceSession():
         # crop (as in preprocessing)
         initial_seg = crop_and_pad_nd(initial_seg, self.preprocessed_props['bbox_used_for_cropping'])
 
-        self._add_patch_for_initial_seg_interaction(initial_seg)
-
         # initial seg is written into initial seg buffer
         interaction_channel = -7
         self.interactions[interaction_channel] = initial_seg
         del initial_seg
         empty_cache(self.device)
         if run_prediction:
+            self._add_patch_for_initial_seg_interaction(initial_seg)
             self._predict()
 
     @torch.inference_mode
