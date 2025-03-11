@@ -341,11 +341,13 @@ class nnInteractiveInferenceSession():
         # initial seg is written into initial seg buffer
         interaction_channel = -7
         self.interactions[interaction_channel] = initial_seg
-        del initial_seg
         empty_cache(self.device)
         if run_prediction:
             self._add_patch_for_initial_seg_interaction(initial_seg)
+            del initial_seg
             self._predict()
+        else:
+            del initial_seg
 
     @torch.inference_mode
     def _predict(self):
@@ -369,6 +371,7 @@ class nnInteractiveInferenceSession():
             print('It seems like more than one interaction was added since the last prediction. This is not '
                   'recommended and may cause unexpected behavior or inefficient predictions')
 
+        start_predict = time()
         with torch.autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
             for prediction_center, initial_zoom_out_factor in zip(self.new_interaction_centers, self.new_interaction_zoom_out_factors):
                 # make a prediction at initial zoom out factor. If more zoom out is required, do this until the
@@ -384,7 +387,7 @@ class nnInteractiveInferenceSession():
                 zoom_out_factor = initial_zoom_out_factor
                 max_zoom_out_factor = initial_zoom_out_factor
 
-                start = time()
+                start_autozoom = time()
                 while zoom_out_factor is not None and zoom_out_factor <= 4:
                     print('Performing prediction at zoom out factor', zoom_out_factor)
                     max_zoom_out_factor = max(max_zoom_out_factor, zoom_out_factor)
@@ -534,7 +537,7 @@ class nnInteractiveInferenceSession():
                     else:
                         zoom_out_factor = None
                 end = time()
-                print(f'Auto zoom stage took {round(end - start, ndigits=3)}s. Max zoom out factor was {max_zoom_out_factor}')
+                print(f'Auto zoom stage took {round(end - start_autozoom, ndigits=3)}s. Max zoom out factor was {max_zoom_out_factor}')
 
                 if max_zoom_out_factor > 1 and has_diff:
                     start_refinement = time()
@@ -574,7 +577,7 @@ class nnInteractiveInferenceSession():
                     print(f'Took {round(end_refinement - start_refinement, 3)} s for refining the segmentation with {len(bboxes_ordered)} bounding boxes')
                 else:
                     print('No refinement necessary')
-        print(f'Done. Total time {round(time() - start, 3)}s')
+        print(f'Done. Total time {round(time() - start_predict, 3)}s')
 
         self.new_interaction_centers = []
         self.new_interaction_zoom_out_factors = []
