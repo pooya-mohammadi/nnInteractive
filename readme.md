@@ -82,7 +82,7 @@ MODEL_NAME = "nnInteractive_v1.0"  # Updated models may be available in the futu
 DOWNLOAD_DIR = "/home/isensee/temp"  # Specify the download directory
 
 download_path = snapshot_download(
-    repo_id=REPO_ID, 
+    repo_id=REPO_ID,
     allow_patterns=[f"{MODEL_NAME}/*"],
     local_dir=DOWNLOAD_DIR
 )
@@ -90,7 +90,7 @@ download_path = snapshot_download(
 # The model is now stored in DOWNLOAD_DIR/MODEL_NAME.
 
 # --- Initialize Inference Session ---
-from nnInteractive.inference.nnInteractiveInferenceSessionV3 import nnInteractiveInferenceSessionV3
+from nnInteractive.deprecated.nnInteractiveInferenceSessionV3 import nnInteractiveInferenceSessionV3
 
 session = nnInteractiveInferenceSessionV3(
     device=torch.device("cuda:0"),  # Set inference device

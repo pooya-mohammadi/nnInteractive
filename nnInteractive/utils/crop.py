@@ -1,7 +1,6 @@
 from typing import Sequence
-
 import torch
-
+import torch.nn.functional as F
 
 def crop_and_pad_into_buffer(target_tensor: torch.Tensor,
                              bbox: Sequence[Sequence[int]],
@@ -131,9 +130,6 @@ def paste_tensor(target: torch.Tensor, source: torch.Tensor, bbox):
     return target
 
 
-import torch
-import torch.nn.functional as F
-
 
 def crop_to_valid(img: torch.Tensor, bbox):
     """
@@ -175,6 +171,7 @@ def crop_to_valid(img: torch.Tensor, bbox):
                   crop_indices[1][0]:crop_indices[1][1],
                   crop_indices[2][0]:crop_indices[2][1]]
     return cropped, pad
+
 
 def pad_cropped(cropped: torch.Tensor, pad):
     """

@@ -1,42 +1,83 @@
 from concurrent.futures import ThreadPoolExecutor
+from os import cpu_count
 from time import time
-from typing import List
+from typing import Union, List, Tuple, Optional
 
 import numpy as np
 import torch
 from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice, crop_and_pad_nd
+from batchgenerators.utilities.file_and_folder_operations import load_json, join, subdirs
+from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
 from nnunetv2.utilities.helpers import dummy_context, empty_cache
+from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
+from nnunetv2.utilities.plans_handling.plans_handler import PlansManager, ConfigurationManager
+from torch import nn
+from torch._dynamo import OptimizedModule
 from torch.nn.functional import interpolate
 
-from nnInteractive.inference.nnInteractiveInferenceSessionV2 import nnInteractiveInferenceSessionV2
+import nnInteractive
+from nnInteractive.interaction.point import PointInteraction_stub
+from nnInteractive.trainer.nnInteractiveTrainer import nnInteractiveTrainer_stub
 from nnInteractive.utils.bboxes import generate_bounding_boxes
 from nnInteractive.utils.crop import crop_and_pad_into_buffer, paste_tensor, pad_cropped, crop_to_valid
 from nnInteractive.utils.erosion_dilation import iterative_3x3_same_padding_pool3d
 from nnInteractive.utils.rounding import round_to_nearest_odd
 
 
-class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
+class nnInteractiveInferenceSession():
     def __init__(self,
                  device: torch.device = torch.device('cuda'),
                  use_torch_compile: bool = False,
                  verbose: bool = False,
-                 torch_n_threads: int = 16,
-                 interaction_decay: float = 0.9,
-                 use_background_preprocessing: bool = True,
-                 do_prediction_propagation: bool = True,
+                 torch_n_threads: int = 8,
+                 do_autozoom: bool = True,
                  use_pinned_memory: bool = True,
-                 verbose_run_times: bool = False
                  ):
-        super().__init__(device, use_torch_compile, verbose, torch_n_threads, interaction_decay,
-                         use_background_preprocessing, do_prediction_propagation, use_pinned_memory)
+        """
+        Only intended to work with nnInteractiveTrainerV2 and its derivatives
+        """
+        # set as part of initialization
+        assert use_torch_compile is False, ('This implementation places the preprocessed image and the interactions '
+                                            'into pinned memory for speed reasons. This is incompatible with '
+                                            'torch.compile because of inconsistent strides in the memory layout. '
+                                            'Note to self: .contiguous() on GPU could be a solution. Unclear whether '
+                                            'that will yield a benefit though.')
+        self.network = None
+        self.label_manager = None
+        self.dataset_json = None
+        self.trainer_name = None
+        self.configuration_manager = None
+        self.plans_manager = None
+        self.use_pinned_memory = use_pinned_memory
+        self.device = device
+        self.use_torch_compile = use_torch_compile
+        self.interaction_decay = None
+
+        # image specific
+        self.interactions: torch.Tensor = None
+        self.preprocessed_image: torch.Tensor = None
+        self.preprocessed_props = None
+        self.target_buffer: Union[np.ndarray, torch.Tensor] = None
+
+        # this will be set when loading the model (initialize_from_trained_model_folder)
+        self.pad_mode_data = self.preferred_scribble_thickness = self.point_interaction = None
+
+        self.verbose = verbose
+
+        self.do_autozoom: bool = do_autozoom
+
+        torch.set_num_threads(min(torch_n_threads, cpu_count()))
+
+        self.original_image_shape = None
+
         self.new_interaction_zoom_out_factors: List[float] = []
-        del self.new_interaction_bboxes
         self.new_interaction_centers = []
         self.has_positive_bbox = False
-        self.verbose_run_times = verbose_run_times
 
         # Create a thread pool executor for background tasks.
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        # this only takes care of preprocessing and interaction memory initialization so there is no need to give it
+        # more than 2 workers
+        self.executor = ThreadPoolExecutor(max_workers=2)
         self.preprocess_future = None
         self.interactions_future = None
 
@@ -54,7 +95,54 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
 
         # Offload all image preprocessing to a background thread.
         self.preprocess_future = self.executor.submit(self._background_set_image, image, image_properties)
-        self.input_image_shape = image.shape
+        self.original_image_shape = image.shape
+
+    def _finish_preprocessing_and_initialize_interactions(self):
+        """
+        Block until both the image preprocessing and the interactions tensor initialization
+        are finished.
+        """
+        if self.preprocess_future is not None:
+            # Wait for image preprocessing to complete.
+            self.preprocess_future.result()
+            del self.preprocess_future
+            self.preprocess_future = None
+
+    def set_target_buffer(self, target_buffer: Union[np.ndarray, torch.Tensor]):
+        """
+        Must be 3d numpy array or torch.Tensor
+        """
+        self.target_buffer = target_buffer
+
+    def set_do_autozoom(self, do_propagation: bool, max_num_patches: Optional[int] = None):
+        self.do_autozoom = do_propagation
+
+    def _reset_session(self):
+        self.interactions_future = None
+        self.preprocess_future = None
+
+        del self.preprocessed_image
+        del self.target_buffer
+        del self.interactions
+        del self.preprocessed_props
+        self.preprocessed_image = None
+        self.target_buffer = None
+        self.interactions = None
+        self.preprocessed_props = None
+        empty_cache(self.device)
+        self.original_image_shape = None
+        self.has_positive_bbox = False
+
+    def _initialize_interactions(self, image_torch: torch.Tensor):
+        if self.verbose:
+            print(f'Initialize interactions. Pinned: {self.use_pinned_memory}')
+        # Create the interaction tensor based on the target shape.
+        self.interactions = torch.zeros(
+            (7, *image_torch.shape[1:]),
+            device='cpu',
+            dtype=torch.float16,
+            pin_memory=(self.device.type == 'cuda' and self.use_pinned_memory)
+        )
 
     def _background_set_image(self, image: np.ndarray, image_properties: dict):
         # Convert and clone the image tensor.
@@ -95,37 +183,170 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
         del self.interactions_future
         self.interactions_future = None
 
-    def _initialize_interactions(self, image_torch: torch.Tensor):
-        if self.verbose:
-            print(f'Initialize interactions. Pinned: {self.use_pinned_memory}')
-        # Create the interaction tensor based on the target shape.
-        self.interactions = torch.zeros(
-            (7, *image_torch.shape[1:]),
-            device='cpu',
-            dtype=torch.float16,
-            pin_memory=(self.device.type == 'cuda' and self.use_pinned_memory)
-        )
-
-    def _reset_session(self):
-        super()._reset_session()
-        self.interactions_future = None
-        self.preprocess_future = None
-        self.input_image_shape = None
-
-    def _finish_preprocessing_and_initialize_interactions(self):
-        """
-        Block until both the image preprocessing and the interactions tensor initialization
-        are finished.
-        """
-        if self.preprocess_future is not None:
-            # Wait for image preprocessing to complete.
-            self.preprocess_future.result()
-            del self.preprocess_future
-            self.preprocess_future = None
-
     def reset_interactions(self):
-        super().reset_interactions()
+        """
+        Use this to reset all interactions and start from scratch for the current image. This includes the initial
+        segmentation!
+        """
+        if self.interactions is not None:
+            self.interactions.fill_(0)
+
+        if self.target_buffer is not None:
+            if isinstance(self.target_buffer, np.ndarray):
+                self.target_buffer.fill(0)
+            elif isinstance(self.target_buffer, torch.Tensor):
+                self.target_buffer.zero_()
+        empty_cache(self.device)
         self.has_positive_bbox = False
+
+    def add_bbox_interaction(self, bbox_coords, include_interaction: bool, run_prediction: bool = True) -> np.ndarray:
+        if include_interaction:
+            self.has_positive_bbox = True
+
+        self._finish_preprocessing_and_initialize_interactions()
+
+        lbs_transformed = [round(i) for i in transform_coordinates_noresampling([i[0] for i in bbox_coords],
+                                                             self.preprocessed_props['bbox_used_for_cropping'])]
+        ubs_transformed = [round(i) for i in transform_coordinates_noresampling([i[1] for i in bbox_coords],
+                                                             self.preprocessed_props['bbox_used_for_cropping'])]
+        transformed_bbox_coordinates = [[i, j] for i, j in zip(lbs_transformed, ubs_transformed)]
+
+        if self.verbose:
+            print(f'Added bounding box coordinates.\n'
+                  f'Raw: {bbox_coords}\n'
+                  f'Transformed: {transformed_bbox_coordinates}\n'
+                  f"Crop Bbox: {self.preprocessed_props['bbox_used_for_cropping']}")
+
+        # Prevent collapsed bounding boxes and clip to image shape
+        image_shape = self.preprocessed_image.shape  # Assuming shape is (C, H, W, D) or similar
+
+        for dim in range(len(transformed_bbox_coordinates)):
+            transformed_start, transformed_end = transformed_bbox_coordinates[dim]
+
+            # Clip to image boundaries
+            transformed_start = max(0, transformed_start)
+            transformed_end = min(image_shape[dim + 1], transformed_end)  # +1 to skip channel dim
+
+            # Ensure the bounding box does not collapse to a single point
+            if transformed_end <= transformed_start:
+                if transformed_start == 0:
+                    transformed_end = min(1, image_shape[dim + 1])
+                else:
+                    transformed_start = max(transformed_start - 1, 0)
+
+            transformed_bbox_coordinates[dim] = [transformed_start, transformed_end]
+
+        if self.verbose:
+            print(f'Bbox coordinates after clip to image boundaries and preventing dim collapse:\n'
+                  f'Bbox: {transformed_bbox_coordinates}\n'
+                  f'Internal image shape: {self.preprocessed_image.shape}')
+
+        self._add_patch_for_bbox_interaction(transformed_bbox_coordinates)
+
+        # decay old interactions
+        self.interactions[-6:-4] *= self.interaction_decay
+
+        # place bbox
+        slicer = tuple([slice(*i) for i in transformed_bbox_coordinates])
+        channel = -6 if include_interaction else -5
+        self.interactions[(channel, *slicer)] = 1
+
+        # forward pass
+        if run_prediction:
+            self._predict()
+
+    def add_point_interaction(self, coordinates: Tuple[int, ...], include_interaction: bool, run_prediction: bool = True):
+        self._finish_preprocessing_and_initialize_interactions()
+
+        transformed_coordinates = [round(i) for i in transform_coordinates_noresampling(coordinates,
+                                                             self.preprocessed_props['bbox_used_for_cropping'])]
+
+        self._add_patch_for_point_interaction(transformed_coordinates)
+
+        # decay old interactions
+        self.interactions[-4:-2] *= self.interaction_decay
+
+        interaction_channel = -4 if include_interaction else -3
+        self.interactions[interaction_channel] = self.point_interaction.place_point(
+            transformed_coordinates, self.interactions[interaction_channel])
+        if run_prediction:
+            self._predict()
+
+    def add_scribble_interaction(self, scribble_image: np.ndarray,  include_interaction: bool, run_prediction: bool = True):
+        assert all([i == j for i, j in zip(self.original_image_shape[1:], scribble_image.shape)]), f'Given scribble image must match input image shape. Input image was: {self.original_image_shape[1:]}, given: {scribble_image.shape}'
+        self._finish_preprocessing_and_initialize_interactions()
+
+        scribble_image = torch.from_numpy(scribble_image)
+
+        # crop (as in preprocessing)
+        scribble_image = crop_and_pad_nd(scribble_image, self.preprocessed_props['bbox_used_for_cropping'])
+
+        self._add_patch_for_scribble_interaction(scribble_image)
+
+        # decay old interactions
+        self.interactions[-2:] *= self.interaction_decay
+
+        interaction_channel = -2 if include_interaction else -1
+        torch.maximum(self.interactions[interaction_channel], scribble_image.to(self.interactions.device),
+                      out=self.interactions[interaction_channel])
+        del scribble_image
+        empty_cache(self.device)
+        if run_prediction:
+            self._predict()
+
+    def add_lasso_interaction(self, lasso_image: np.ndarray,  include_interaction: bool, run_prediction: bool = True):
+        assert all([i == j for i, j in zip(self.original_image_shape[1:], lasso_image.shape)]), f'Given lasso image must match input image shape. Input image was: {self.original_image_shape[1:]}, given: {lasso_image.shape}'
+        self._finish_preprocessing_and_initialize_interactions()
+
+        lasso_image = torch.from_numpy(lasso_image)
+
+        # crop (as in preprocessing)
+        lasso_image = crop_and_pad_nd(lasso_image, self.preprocessed_props['bbox_used_for_cropping'])
+
+        self._add_patch_for_lasso_interaction(lasso_image)
+
+        # decay old interactions
+        self.interactions[-6:-4] *= self.interaction_decay
+
+        # lasso is written into bbox channel
+        interaction_channel = -6 if include_interaction else -5
+        torch.maximum(self.interactions[interaction_channel], lasso_image.to(self.interactions.device),
+                      out=self.interactions[interaction_channel])
+        del lasso_image
+        empty_cache(self.device)
+        if run_prediction:
+            self._predict()
+
+    def add_initial_seg_interaction(self, initial_seg: np.ndarray, run_prediction: bool = False):
+        """
+        WARNING THIS WILL RESET INTERACTIONS!
+        """
+        assert all([i == j for i, j in zip(self.original_image_shape[1:], initial_seg.shape)]), f'Given initial seg must match input image shape. Input image was: {self.original_image_shape[1:]}, given: {initial_seg.shape}'
+
+        self._finish_preprocessing_and_initialize_interactions()
+
+        self.reset_interactions()
+
+        if isinstance(self.target_buffer, np.ndarray):
+            self.target_buffer[:] = initial_seg
+
+        initial_seg = torch.from_numpy(initial_seg)
+
+        if isinstance(self.target_buffer, torch.Tensor):
+            self.target_buffer[:] = initial_seg
+
+        # crop (as in preprocessing)
+        initial_seg = crop_and_pad_nd(initial_seg, self.preprocessed_props['bbox_used_for_cropping'])
+
+        self._add_patch_for_initial_seg_interaction(initial_seg)
+
+        # initial seg is written into initial seg buffer
+        interaction_channel = -7
+        self.interactions[interaction_channel] = initial_seg
+        del initial_seg
+        empty_cache(self.device)
+        if run_prediction:
+            self._predict()
 
     @torch.inference_mode
     def _predict(self):
@@ -157,7 +378,7 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
                 # we need this later.
                 previous_prediction = torch.clone(self.interactions[0])
 
-                if not self.do_prediction_propagation:
+                if not self.do_autozoom:
                     initial_zoom_out_factor = 1
 
                 initial_zoom_out_factor = min(initial_zoom_out_factor, 4)
@@ -230,7 +451,7 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
                     rel_pxl_change_threshold = 0.2
                     min_pxl_change_threshold = 100
                     continue_zoom = False
-                    if zoom_out_factor < 4 and self.do_prediction_propagation:
+                    if zoom_out_factor < 4 and self.do_autozoom:
                         for dim in range(len(scaled_bbox)):
                             if continue_zoom:
                                 break
@@ -320,8 +541,8 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
                     start_refinement = time()
                     # only use the region that was previously looked at. Use last scaled_bbox
                     if self.has_positive_bbox:
-                        # mask positive bbox channel with dilated current segmentation to avoid bbox nonsense.
-                        # Basically convert bbox to lasso
+                        # mask positive bbox channel with current segmentation to avoid bbox nonsense.
+                        # Basically convert bbox to pseudo lasso
                         pos_bbox_idx = -6
                         self.interactions[pos_bbox_idx][(~(self.interactions[0] > 0.5)).cpu()] = 0
                         self.has_positive_bbox = False
@@ -383,11 +604,6 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
     def _add_patch_for_initial_seg_interaction(self, initial_seg):
         return self._generic_add_patch_from_image(initial_seg)
 
-    def add_bbox_interaction(self, bbox_coords, include_interaction: bool, run_prediction: bool = True) -> np.ndarray:
-        if include_interaction:
-            self.has_positive_bbox = True
-        return super().add_bbox_interaction(bbox_coords, include_interaction, run_prediction)
-
     def _generic_add_patch_from_image(self, image: torch.Tensor):
         if not torch.any(image):
             print('Received empty image prompt. Cannot add patches for prediction')
@@ -402,4 +618,117 @@ class nnInteractiveInferenceSessionV3(nnInteractiveInferenceSessionV2):
         self.new_interaction_zoom_out_factors.append(max(1, max([i / j for i, j in zip(requested_size, self.configuration_manager.patch_size)])))
         self.new_interaction_centers.append(roi_center)
         print(f'Added new image interaction: scale {self.new_interaction_zoom_out_factors[-1]}, center {self.new_interaction_centers}')
+
+    def initialize_from_trained_model_folder(self, model_training_output_dir: str,
+                                             use_fold: Union[int, str] = None,
+                                             checkpoint_name: str = 'checkpoint_final.pth'):
+        """
+        This is used when making predictions with a trained model
+        """
+        # load trainer specific settings
+        expected_json_file = join(model_training_output_dir, 'inference_session_class.json')
+        json_content = load_json(expected_json_file)
+        if isinstance(json_content, str):
+            # old convention where we only specified the inference class in this file. Set defaults for stuff
+            point_interaction_radius = 4
+            point_interaction_use_etd = True
+            self.preferred_scribble_thickness = [2, 2, 2]
+            self.point_interaction = PointInteraction_stub(
+                point_interaction_radius,
+                point_interaction_use_etd)
+            self.pad_mode_data = "constant"
+        else:
+            point_interaction_radius = json_content['point_radius']
+            self.preferred_scribble_thickness = json_content['preferred_scribble_thickness']
+            if not isinstance(self.preferred_scribble_thickness, (tuple, list)):
+                self.preferred_scribble_thickness = [self.preferred_scribble_thickness] * 3
+            self.interaction_decay = json_content['interaction_decay'] if json_content.get('interaction_decay') else 0.9
+            point_interaction_use_etd = True # so far this is not defined in that file so we stick with default
+            self.point_interaction = PointInteraction_stub(point_interaction_radius, point_interaction_use_etd)
+            # padding mode for data. See nnInteractiveTrainerV2_nodelete_reflectpad
+            self.pad_mode_data = json_content['pad_mode_image'] if 'pad_mode_image' in json_content.keys() else "constant"
+
+        dataset_json = load_json(join(model_training_output_dir, 'dataset.json'))
+        plans = load_json(join(model_training_output_dir, 'plans.json'))
+        plans_manager = PlansManager(plans)
+
+        if use_fold is not None:
+            use_fold = int(use_fold) if use_fold != 'all' else use_fold
+            fold_folder = f'fold_{use_fold}'
+        else:
+            fldrs = subdirs(model_training_output_dir, prefix='fold_', join=False)
+            assert len(fldrs) == 1, f'Attempted to infer fold but there is != 1 fold_ folders: {fldrs}'
+            fold_folder = fldrs[0]
+
+        checkpoint = torch.load(join(model_training_output_dir, fold_folder, checkpoint_name),
+                                map_location=self.device, weights_only=False)
+        trainer_name = checkpoint['trainer_name']
+        configuration_name = checkpoint['init_args']['configuration']
+
+        parameters = checkpoint['network_weights']
+
+        configuration_manager = plans_manager.get_configuration(configuration_name)
+        # restore network
+        num_input_channels = determine_num_input_channels(plans_manager, configuration_manager, dataset_json)
+        trainer_class = recursive_find_python_class(join(nnInteractive.__path__[0], "trainer"),
+                                                    trainer_name, 'nnInteractive.trainer')
+        if trainer_class is None:
+            print(f'Unable to locate trainer class {trainer_name} in nnInteractive.trainer. '
+                               f'Please place it there (in any .py file)!')
+            print('Attempting to use default nnInteractiveTrainer_stub. If you encounter errors, this is where you need to look!')
+            trainer_class = nnInteractiveTrainer_stub
+
+        network = trainer_class.build_network_architecture(
+            configuration_manager.network_arch_class_name,
+            configuration_manager.network_arch_init_kwargs,
+            configuration_manager.network_arch_init_kwargs_req_import,
+            num_input_channels,
+            plans_manager.get_label_manager(dataset_json).num_segmentation_heads,
+            enable_deep_supervision=False
+        ).to(self.device)
+        network.load_state_dict(parameters)
+
+        self.plans_manager = plans_manager
+        self.configuration_manager = configuration_manager
+        self.network = network
+        self.dataset_json = dataset_json
+        self.trainer_name = trainer_name
+        self.label_manager = plans_manager.get_label_manager(dataset_json)
+        if self.use_torch_compile and not isinstance(self.network, OptimizedModule):
+            print('Using torch.compile')
+            self.network = torch.compile(self.network)
+
+    def manual_initialization(self, network: nn.Module, plans_manager: PlansManager,
+                              configuration_manager: ConfigurationManager,
+                              dataset_json: dict, trainer_name: str):
+        """
+        This is used by the nnUNetTrainer to initialize nnUNetPredictor for the final validation
+        """
+        self.plans_manager = plans_manager
+        self.configuration_manager = configuration_manager
+        self.network = network
+        self.dataset_json = dataset_json
+        self.trainer_name = trainer_name
+        self.label_manager = plans_manager.get_label_manager(dataset_json)
+
+        if self.use_torch_compile and not isinstance(self.network, OptimizedModule):
+            print('Using torch.compile')
+            self.network = torch.compile(self.network)
+
+        if not self.use_torch_compile and isinstance(self.network, OptimizedModule):
+            self.network = self.network._orig_mod
+
+        self.network = self.network.to(self.device)
+
+
+def transform_coordinates_noresampling(
+        coords_orig: Union[List[int], Tuple[int, ...]],
+        nnunet_preprocessing_crop_bbox: List[Tuple[int, int]]
+) -> Tuple[int, ...]:
+    """
+    converts coordinates in the original uncropped image to the internal cropped representation. Man I really hate
+    nnU-Net's crop to nonzero!
+    """
+    return tuple([coords_orig[d] - nnunet_preprocessing_crop_bbox[d][0] for d in range(len(coords_orig))])
+
 
