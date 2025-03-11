@@ -637,12 +637,13 @@ class nnInteractiveInferenceSession():
                 point_interaction_radius,
                 point_interaction_use_etd)
             self.pad_mode_data = "constant"
+            self.interaction_decay = 0.9
         else:
             point_interaction_radius = json_content['point_radius']
             self.preferred_scribble_thickness = json_content['preferred_scribble_thickness']
             if not isinstance(self.preferred_scribble_thickness, (tuple, list)):
                 self.preferred_scribble_thickness = [self.preferred_scribble_thickness] * 3
-            self.interaction_decay = json_content['interaction_decay'] if json_content.get('interaction_decay') else 0.9
+            self.interaction_decay = json_content['interaction_decay'] if 'interaction_decay' in json_content.keys() else 0.9
             point_interaction_use_etd = True # so far this is not defined in that file so we stick with default
             self.point_interaction = PointInteraction_stub(point_interaction_radius, point_interaction_use_etd)
             # padding mode for data. See nnInteractiveTrainerV2_nodelete_reflectpad

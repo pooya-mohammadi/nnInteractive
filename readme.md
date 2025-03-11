@@ -90,18 +90,15 @@ download_path = snapshot_download(
 # The model is now stored in DOWNLOAD_DIR/MODEL_NAME.
 
 # --- Initialize Inference Session ---
-from nnInteractive.deprecated.nnInteractiveInferenceSessionV3 import nnInteractiveInferenceSessionV3
+from nnInteractive.inference.inference_session import nnInteractiveInferenceSession
 
-session = nnInteractiveInferenceSessionV3(
+session = nnInteractiveInferenceSession(
     device=torch.device("cuda:0"),  # Set inference device
     use_torch_compile=False,  # Experimental: Not tested yet
     verbose=False,
     torch_n_threads=os.cpu_count(),  # Use available CPU cores
-    interaction_decay=0.9,  # Must match the training setting
-    use_background_preprocessing=True,  # Enables threading for preprocessing and memory allocation (useful in GUI mode)
-    do_prediction_propagation=True,  # Enables AutoZoom for better patching
+    do_autozoom=True,  # Enables AutoZoom for better patching
     use_pinned_memory=True,  # Optimizes GPU memory transfers
-    verbose_run_times=False,
 )
 
 # Load the trained model
