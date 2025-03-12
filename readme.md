@@ -67,7 +67,7 @@ Either install via pip:
 Or clone and install this repository:
 ```bash
 git clone https://github.com/MIC-DKFZ/nnInteractive
-cd nnInteractive_inference
+cd nnInteractive
 pip install -e .
 ```
 
