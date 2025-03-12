@@ -62,11 +62,11 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu12
 
 ##### 3. Install this repository
 Either install via pip:
-`pip install nninteractive_inference`
+`pip install nninteractive`
 
 Or clone and install this repository:
 ```bash
-git clone https://github.com/MIC-DKFZ/nnInteractive_inference
+git clone https://github.com/MIC-DKFZ/nnInteractive
 cd nnInteractive_inference
 pip install -e .
 ```
