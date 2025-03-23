@@ -127,9 +127,13 @@ session.set_target_buffer(target_tensor)
 # Interactions can be freely chained and mixed in any order. Each interaction refines the segmentation.
 # The model updates the segmentation mask in the target buffer after every interaction.
 
-# Example: Add a point interaction
+# Example: Add a **positive** point interaction
 # POINT_COORDINATES should be a tuple (x, y, z) specifying the point location.
 session.add_point_interaction(POINT_COORDINATES, include_interaction=True)
+
+# Example: Add a **negative** point interaction
+# To make any interaction negative set include_interaction=False
+session.add_point_interaction(POINT_COORDINATES, include_interaction=False)
 
 # Example: Add a bounding box interaction
 # BBOX_COORDINATES must be specified as [[x1, x2], [y1, y2], [z1, z2]] (half-open intervals).
