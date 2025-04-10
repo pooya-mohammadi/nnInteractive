@@ -3,13 +3,17 @@
 # Python backend for `nnInteractive: Redefining 3D Promptable Segmentation`
 
 This repository contains the nnInteractive python backend for our 
-[napari plugin](https://github.com/MIC-DKFZ/napari-nninteractive) and [MITK integration](Todo). It can be used for 
+[napari plugin](https://github.com/MIC-DKFZ/napari-nninteractive) and [MITK integration](https://www.mitk.org/wiki/MITK-nnInteractive). It can be used for 
 python-based inference.
 
 
 ## What is nnInteractive?
 
-    paper
+> Isensee, F.\*, Rokuss, M.\*, Krämer, L.\*, Dinkelacker, S., Ravindran, A., Stritzke, F., Hamm, B., Wald, T., Langenberg, M., Ulrich, C., Deissler, J., Floca, R., & Maier-Hein, K. (2025). nnInteractive: Redefining 3D Promptable Segmentation. https://arxiv.org/abs/2503.08373 \
+> *: equal contribution
+
+Link: [![arXiv](https://img.shields.io/badge/arXiv-2503.08373-b31b1b.svg)](https://arxiv.org/abs/2503.08373)
+
 
 ##### Abstract:
 
@@ -58,12 +62,12 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu12
 
 ##### 3. Install this repository
 Either install via pip:
-`pip install nninteractive_inference`
+`pip install nninteractive`
 
 Or clone and install this repository:
 ```bash
-git clone https://github.com/MIC-DKFZ/nnInteractive_inference
-cd nnInteractive_inference
+git clone https://github.com/MIC-DKFZ/nnInteractive
+cd nnInteractive
 pip install -e .
 ```
 
@@ -123,9 +127,13 @@ session.set_target_buffer(target_tensor)
 # Interactions can be freely chained and mixed in any order. Each interaction refines the segmentation.
 # The model updates the segmentation mask in the target buffer after every interaction.
 
-# Example: Add a point interaction
+# Example: Add a **positive** point interaction
 # POINT_COORDINATES should be a tuple (x, y, z) specifying the point location.
 session.add_point_interaction(POINT_COORDINATES, include_interaction=True)
+
+# Example: Add a **negative** point interaction
+# To make any interaction negative set include_interaction=False
+session.add_point_interaction(POINT_COORDINATES, include_interaction=False)
 
 # Example: Add a bounding box interaction
 # BBOX_COORDINATES must be specified as [[x1, x2], [y1, y2], [z1, z2]] (half-open intervals).
@@ -177,7 +185,14 @@ session.set_target_buffer(torch.zeros(NEW_IMAGE.shape[1:], dtype=torch.uint8))
 ## Citation
 When using nnInteractive, please cite the following paper:
 
-    todo
+> Isensee, F.\*, Rokuss, M.\*, Krämer, L.\*, Dinkelacker, S., Ravindran, A., Stritzke, F., Hamm, B., Wald, T., Langenberg, M., Ulrich, C., Deissler, J., Floca, R., & Maier-Hein, K. (2025). nnInteractive: Redefining 3D Promptable Segmentation. https://arxiv.org/abs/2503.08373 \
+> *: equal contribution
+
+Link: [![arXiv](https://img.shields.io/badge/arXiv-2503.08373-b31b1b.svg)](https://arxiv.org/abs/2503.08373)
+
+
+# License
+Note that while this repository is available under Apache-2.0 license (see [LICENSE](./LICENSE)), the [model checkpoint](https://huggingface.co/nnInteractive/nnInteractive) is `Creative Commons Attribution Non Commercial Share Alike 4.0`! 
 
 ## Acknowledgments
 
