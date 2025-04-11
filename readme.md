@@ -181,6 +181,20 @@ session.set_target_buffer(torch.zeros(NEW_IMAGE.shape[1:], dtype=torch.uint8))
 # Enjoy!
 ```
 
+## nnInteractive SuperVoxels
+
+As part of the `nnInteractive` framework, we provide a dedicated module for **supervoxel generation** based on [SAM](https://github.com/facebookresearch/segment-anything) and [SAM2](https://github.com/facebookresearch/sam2). This replaces traditional superpixel methods (e.g., SLIC) with **foundation model–powered 3D pseudo-labels**.
+
+🔗 **Module:** [`nnInteractive/supervoxel/`](nnInteractive/supervoxel)
+
+The SuperVoxel module allows you to:
+
+- Automatically generate high-quality 3D supervoxels via axial sampling + SAM segmentation and SAM2 mask propagation.
+- Use the generated supervoxels as **pseudo-ground-truth labels** to train promptable 3D segmentation models like `nnInteractive`.
+- Export `nnUNet`-compatible `.pkl` foreground prompts for downstream use.
+
+For detailed installation, configuration, and usage instructions, check the [SuperVoxel README](nnInteractive/supervoxel/README.md).
+
 
 ## Citation
 When using nnInteractive, please cite the following paper:
