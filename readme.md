@@ -54,7 +54,7 @@ conda activate nnInteractive
 Go to the [PyTorch homepage](https://pytorch.org/get-started/locally/) and pick the right configuration.
 Note that since recently PyTorch needs to be installed via pip. This is fine to do within your conda environment.
 
-For Ubuntu with a Nvidia GPU, pick 'stable', 'Linux', 'Pip', 'Python', 'CUDA12.6' (if all drivers are up to date, otherwise use and older version):
+For Ubuntu with a Nvidia GPU, pick 'stable', 'Linux', 'Pip', 'Python', 'CUDA12.6' (if all drivers are up to date, otherwise use an older version):
 
 ```
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
